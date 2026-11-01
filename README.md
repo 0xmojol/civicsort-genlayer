@@ -15,7 +15,7 @@ CivicSort gives that interpretation a shared, auditable on-chain record rather t
 1. A caller registers a profile with a unique ID, region label, HTTPS source URL, and a text snapshot of the sorting guide.
 2. The contract stores the profile and the SHA3-256 hash of the exact guide text. A profile ID cannot be overwritten; a revised guide needs a new profile ID.
 3. A caller submits an item description and one to five packaging components against a profile.
-4. The leader and validator independently classify each component using the stored guide text. The output is accepted only when the validators agree on the category. Non-UNKNOWN decisions must include a quote found in the stored guide.
+4. The leader and validator independently classify each component using the stored guide text. The validator checks agreement on the category and local collection stream. A non-UNKNOWN decision must include a supporting quote found in the stored guide.
 5. The contract stores the result with the profile ID, policy hash, source URL, item, components, categories, local stream labels, and supporting quotes.
 
 ## Categories
@@ -72,9 +72,15 @@ Then run the Direct Mode test command again.
 
     GENVM_VERSION=v0.3.0-rc7 genvm-lint check contracts/civic_sort.py
 
+Validation performed for the current contract source:
+
+- Direct Mode tests: 4 passed.
+- GenVM lint and validation: passed.
+- Python syntax compilation: passed.
+
 ## Consensus and data integrity
 
-The policy text is included in the contract state and cannot be changed for an existing profile. Its hash binds each evaluation to that exact text. Validators independently classify the submitted components against the same stored snapshot. The contract validates the output schema, restricts categories to a fixed set, and checks that each non-UNKNOWN leader quote occurs in the stored policy text.
+The policy text is included in the contract state and cannot be changed for an existing profile. Its hash binds each evaluation to that exact text. The leader and validator independently classify the submitted components against the same stored snapshot. The contract validates the output schema, restricts categories to a fixed set, compares the category and normalized local stream, and checks that non-UNKNOWN supporting quotes occur in the stored policy text.
 
 ## Limitations
 
@@ -89,14 +95,22 @@ The policy text is included in the contract state and cannot be changed for an e
 
 - Repository: https://github.com/0xmojol/civicsort-genlayer
 - Contract source: https://github.com/0xmojol/civicsort-genlayer/blob/main/contracts/civic_sort.py
+- Direct Mode tests: https://github.com/0xmojol/civicsort-genlayer/tree/main/tests/direct
+- Python dependencies: https://github.com/0xmojol/civicsort-genlayer/blob/main/requirements.txt
 
 ### GenLayer Explorer
 
-- Contract: https://explorer-studio.genlayer.com/address/0x838Cfb5F6fb88fdF2317Cef1FED420Dae873e03c
-- Deployment transaction: https://explorer-studio.genlayer.com/tx/0xd55176d536ecedcce8480ad0676aeae4c4a5f526b18e4a33accaa5571db72eb7
-- Profile registration transaction: https://explorer-studio.genlayer.com/tx/0xe03ebd599ffafa91b15d431f6f5ff0b77f24610dd7637306b3fcd76ef7f97df2
-- Consensus evaluation transaction: https://explorer-studio.genlayer.com/tx/0xfd6e647e22b6596cb926596e8eb7ec21f201f196b8fae0f6fa9932df406385d9
+- Current contract: https://explorer-studio.genlayer.com/address/0xa97F6764912bC738af425516A39dCdd4E8a61314
+- Deployment transaction: https://explorer-studio.genlayer.com/tx/0xcd96ab693e4158876646172f3dbb36570747380fc0a9e7ba7f78a7f2540cc113
+- Profile registration transaction: https://explorer-studio.genlayer.com/tx/0xedfc8e3d03151bf3f0e71f917ebc8c809e4b8c71e65103a47035c1c13762ec5f
+- Consensus evaluation transaction: https://explorer-studio.genlayer.com/tx/0xf0c7eadc5ded17d700df4e93d74e86b4b4bc16ccc571ebeb5520086d1e735436
 
-The live evaluation returned RECYCLING for Verbundstoff (Getränkekarton), with local stream Gelbe Tonne and a quote from the registered policy snapshot. The stored evaluation was then retrieved through the read-only get_evaluation("0") method in Studio.
+The current evaluation returned RECYCLING for Verbundstoff (Getränkekarton), with local stream Gelbe Tonne and a supporting quote from the registered policy snapshot. The read-only get_evaluation("0") method returned the stored record, and get_counts returned one profile and one evaluation.
 
-The listed transactions show FINALIZED, Accepted, and 0 GEN value in the Explorer. Transaction value does not establish the cost of all future network interactions.
+The previous contract instance remains at 0x838Cfb5F6fb88fdF2317Cef1FED420Dae873e03c. The current source and latest evaluation evidence above refer to the new instance.
+
+### Other
+
+- GenLayer Test documentation: https://docs.genlayer.com/api-references/genlayer-test
+- GenLayer Testing Suite: https://github.com/genlayerlabs/genlayer-testing-suite
+- GenLayer upgradability documentation: https://docs.genlayer.com/developers/intelligent-contracts/features/upgradability
