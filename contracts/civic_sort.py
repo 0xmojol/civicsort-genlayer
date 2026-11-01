@@ -28,6 +28,15 @@ def _parse_json_result(raw):
     return json.loads(str(raw))
 
 
+def _unknown_decision(index: int) -> dict:
+    return {
+        "index": index,
+        "category": "UNKNOWN",
+        "local_stream": "",
+        "quote": "",
+    }
+
+
 class CivicSort(gl.Contract):
     profile_count: u256
     evaluation_count: u256
@@ -47,6 +56,9 @@ class CivicSort(gl.Contract):
         policy_text: str,
     ) -> str:
         """Register an immutable, user-supplied snapshot of a local sorting guide."""
+        if not all(isinstance(value, str) for value in (profile_id, region_label, source_url, policy_text)):
+            raise gl.vm.UserError("all profile fields must be strings")
+
         profile_id = profile_id.strip()
         region_label = region_label.strip()
         source_url = source_url.strip()
@@ -60,7 +72,7 @@ class CivicSort(gl.Contract):
             raise gl.vm.UserError("region_label must be 2-80 characters")
         if not source_url.startswith("https://") or len(source_url) > 240:
             raise gl.vm.UserError("source_url must be an HTTPS URL up to 240 characters")
-        if not isinstance(policy_text, str) or not (100 <= len(policy_text) <= MAX_POLICY_CHARS):
+        if not (100 <= len(policy_text) <= MAX_POLICY_CHARS):
             raise gl.vm.UserError("policy_text must be 100-12000 characters")
 
         profile = {
@@ -79,6 +91,8 @@ class CivicSort(gl.Contract):
     @gl.public.write
     def evaluate_item(self, profile_id: str, item_description: str, components_json: str) -> str:
         """Classify up to five packaging components against a frozen guide snapshot."""
+        if not isinstance(profile_id, str) or not isinstance(item_description, str):
+            raise gl.vm.UserError("profile_id and item_description must be strings")
         profile_id = profile_id.strip()
         item_description = item_description.strip()
 
@@ -98,10 +112,11 @@ class CivicSort(gl.Contract):
             raise gl.vm.UserError("provide a JSON list of 1-5 components")
         if any(not isinstance(item, str) or not (1 <= len(item.strip()) <= 100) for item in components):
             raise gl.vm.UserError("each component must be a 1-100 character string")
-
         components = [item.strip() for item in components]
+
         profile = json.loads(self.profiles[profile_id])
         policy_text = profile["policy_text"]
+        normalized_policy = _normalize(policy_text)
         policy_hash = profile["policy_hash"]
         region_label = profile["region_label"]
 
@@ -146,19 +161,23 @@ Return exactly one decision for each component, preserving its index.
                         raise ValueError("bad decision index")
 
                     category = str(decision.get("category", "UNKNOWN")).upper()
-                    if category not in VALID_CATEGORIES:
-                        category = "UNKNOWN"
-
                     local_stream = str(decision.get("local_stream", "")).strip()[:80]
                     quote = str(decision.get("quote", "")).strip()[:240]
 
-                    if category == "UNKNOWN":
-                        local_stream = ""
-                        quote = ""
-                    elif not quote or _normalize(quote) not in _normalize(policy_text):
+                    if category not in VALID_CATEGORIES:
                         category = "UNKNOWN"
-                        local_stream = ""
-                        quote = ""
+                    if category == "UNKNOWN":
+                        decisions.append(_unknown_decision(expected_index))
+                        continue
+
+                    normalized_quote = _normalize(quote)
+                    normalized_stream = _normalize(local_stream)
+                    if not quote or normalized_quote not in normalized_policy:
+                        decisions.append(_unknown_decision(expected_index))
+                        continue
+                    if local_stream and normalized_stream not in normalized_policy:
+                        decisions.append(_unknown_decision(expected_index))
+                        continue
 
                     decisions.append({
                         "index": expected_index,
@@ -170,10 +189,7 @@ Return exactly one decision for each component, preserving its index.
                 return decisions
 
             except Exception:
-                return [
-                    {"index": i, "category": "UNKNOWN", "local_stream": "", "quote": ""}
-                    for i in range(len(components))
-                ]
+                return [_unknown_decision(i) for i in range(len(components))]
 
         def leader_fn():
             return classify()
@@ -197,23 +213,73 @@ Return exactly one decision for each component, preserving its index.
                     return False
                 if leader_decision.get("index") != index or own_decision.get("index") != index:
                     return False
-                if leader_decision.get("category") != own_decision.get("category"):
+
+                leader_category = leader_decision.get("category")
+                own_category = own_decision.get("category")
+                if leader_category not in VALID_CATEGORIES or leader_category != own_category:
                     return False
 
-                quote = str(leader_decision.get("quote", ""))
-                if quote and _normalize(quote) not in _normalize(policy_text):
+                leader_stream = str(leader_decision.get("local_stream", "")).strip()
+                own_stream = str(own_decision.get("local_stream", "")).strip()
+                if _normalize(leader_stream) != _normalize(own_stream):
                     return False
+
+                leader_quote = str(leader_decision.get("quote", "")).strip()
+                own_quote = str(own_decision.get("quote", "")).strip()
+
+                if leader_category == "UNKNOWN":
+                    if leader_stream or own_stream or leader_quote or own_quote:
+                        return False
+                else:
+                    if not leader_quote or not own_quote:
+                        return False
+                    if _normalize(leader_quote) not in normalized_policy:
+                        return False
+                    if _normalize(own_quote) not in normalized_policy:
+                        return False
+                    if leader_stream and _normalize(leader_stream) not in normalized_policy:
+                        return False
+                    if own_stream and _normalize(own_stream) not in normalized_policy:
+                        return False
 
             return True
 
         agreed = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
         decisions = agreed if isinstance(agreed, list) else []
 
+        # Deterministic defense-in-depth validation before writing state.
         if len(decisions) != len(components):
-            decisions = [
-                {"index": i, "category": "UNKNOWN", "local_stream": "", "quote": ""}
-                for i in range(len(components))
-            ]
+            decisions = [_unknown_decision(i) for i in range(len(components))]
+        else:
+            clean_decisions = []
+            for index, decision in enumerate(decisions):
+                if not isinstance(decision, dict) or decision.get("index") != index:
+                    clean_decisions.append(_unknown_decision(index))
+                    continue
+
+                category = decision.get("category")
+                local_stream = str(decision.get("local_stream", "")).strip()[:80]
+                quote = str(decision.get("quote", "")).strip()[:240]
+
+                if category not in VALID_CATEGORIES:
+                    clean_decisions.append(_unknown_decision(index))
+                elif category == "UNKNOWN":
+                    clean_decisions.append(_unknown_decision(index))
+                elif (
+                    not quote
+                    or _normalize(quote) not in normalized_policy
+                    or (local_stream and _normalize(local_stream) not in normalized_policy)
+                ):
+                    clean_decisions.append(_unknown_decision(index))
+                else:
+                    clean_decisions.append({
+                        "index": index,
+                        "category": category,
+                        "local_stream": local_stream,
+                        "quote": quote,
+                    })
+
+            decisions = clean_decisions
 
         evaluation_id = str(int(self.evaluation_count))
         record = {
@@ -227,7 +293,6 @@ Return exactly one decision for each component, preserving its index.
             "decisions": decisions,
             "limitation": "Consensus interprets the registered snapshot; the contract does not authenticate the source publisher or certify legal compliance.",
         }
-
         self.evaluations[evaluation_id] = _compact_json(record)
         self.evaluation_count += 1
         return _compact_json(record)
